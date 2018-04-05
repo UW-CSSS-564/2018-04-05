@@ -15,8 +15,7 @@ The Naive Bayes classifiers are a family of classifiers which apply Bayes' Rule 
 Suppose that $y$ is the class of an observation; i.e., it is a discrete variable taking values $j \in 1, \dots, J$.
 Suppose that $(x_1, \dots, x_k)$ is a vector of $K$ observed features (predictors) for an observation.
 These can be discrete or continuous.
-We are interested in the probabilities of each class after having observed its features,
-which we can reformulate in Bayes' rule.
+We are interested in the probabilities of each class after having observed its features, which we can reformulate in Bayes' rule.
 $$
 p(y | x_1, \dots, x_k) = \frac{p(x_1, \dots, x_k | y) p(y)}{\sum_{j = 1}^{J} p(x_1, \dots, x_k | y = j) p(y = j)}
 $$
@@ -53,11 +52,7 @@ the workflow is,
 
 1. Train your model on data ($x_1, \dots, x_k$, $y$) to estimate the distributions $\hat{p}(y)$, $\hat{p}(x_1 | y)$, ..., $\hat{p}(x_K | y)$.
 2. For new observations, calculate $p(y | x)$ using the learned parameters of the distribution.
-3. Evaluate the model using predictive criteria
-
-In our cases we will be using *maximum a posteriori* estimators to find the parameters of $\hat{p}(y)$, $\hat{p}(x_1 | y)$, ..., $\hat{p}(x_K | y)$.
-What makes this convenient is that the MAP estimator can be estimated separately for each term.
-
+3. Evaluate the model using predictive criteria.
 
 
 
@@ -73,42 +68,13 @@ In an early example of empirical Bayesian statistics and computational NLP, F. M
 This example will use the following libraries.
 ```{r message=FALSE}
 library("corpus")
-library("tidytext")
 library("tidyverse")
 ```
 
-Load the text of Federalist papers from the **corpus package**.
-```{r federalist}
-data("federalist", package = "corpus")
-
-federalist <- federalist %>%
-  # add a document number
-  mutate(number = row_number())
-
+The file `federalist.csv` contains word counts of 70 function words used by Mosteller and Wallace in their analysis, as well as the count of "-OTHER-" (a count of all other tokens, including words and punction, in the document).
+```{r federalist_csv}
+federalist <- read_csv("federalist.csv", na = "")
 ```
-
-We will often only be referring to Hamilton and Madison and ignore John Jay, so 
-assign their names to a variable that we will use several times.
-```{r}
-AUTHORS <- c("Hamilton", "Madison")
-```
-
-Create a data frame of document-term counts,
-```{r federalist_wc}
-federalist_wc <- term_counts(federalist) %>%
-  mutate(text = as.integer(text),
-         term = as.character(term)) %>%
-  left_join(select(federalist, text = number, author),
-            by = "text")
-```
-
-The features we will use for paper is the 
-```{r}
-federalist_wc <- federalist_wc %>%
-  filter(term %in% corpus::stopwords_en)
-```
-
-Having seen the data, let's turn to our analysis.
 
 We have $D$ documents. 
 Let $y \in Y = \{\text{Hamilton}, \text{Madison} \}$ be the author of each document.
@@ -143,35 +109,25 @@ $$
 The value of $\hat{\gamma}$ is the fraction of documents in category $j$ to all documents.
 
 ```{r}
-p_words_author <- federalist_wc %>%
+p_words_author <- federalist %>%
   # keep only Hamilton and Madison
-  filter(author %in% AUTHORS) %>%
+  filter(author %in% c("Hamilton", "Madison")) %>%
   # count terms used by each author
   group_by(author, term) %>%
   summarise(count = sum(count)) %>%
   ungroup() %>%
-  # ensure all (author, term) combinations appear
-  # fill in missing combinations with count = 0
-  complete(author, term, fill = list(count = 0)) %>%
   # calculate p(w | c) for each author
   group_by(author) %>%
   mutate(p = (count + 1) / sum(count + 1))
 
 ```
 
-For the priors on categories we can use the prior generated from the proportion of documents in each class,
-$$
-\hat{p}(c) = \frac{D_c}{D} ,
-$$
-where $D_c$ is the number of documents in class $c$, and $D$ is the total number of documents.
-
+Create the proportion of documents associated with each author. 
 ```{r}
 p_author <- federalist %>%
-  filter(author %in% AUTHORS) %>%
+  filter(author %in% c("Hamilton", "Madison")) %>%
   count(author) %>%
-  mutate(p = n / sum(n),
-         # log-probabilites are easier to work with
-         logp = log(p))
+  mutate(p = n / sum(n))
 p_author
 ```
 
@@ -179,22 +135,19 @@ Use Bayes' rule to find the posterior probability of each document:
 ```{r}
 post <- p_words_author %>%
   select(author, term, p) %>%
-  # start with p_word_cat so that all (term, author)
-  # combinations are represented
-  left_join(select(federalist_wc, text, term, count),
-            by = c("term")) %>%
-  mutate(count = if_else(is.na(count), 0, count)) %>%
-  # calculate density of multinomial distribution for each probability distribution
+  # don't include author.
+  left_join(select(federalist, text, term, count), by = c("term")) %>%
   group_by(author, text) %>%
   arrange(author, text, term) %>%  
-  summarise(logp_words_author = dmultinom(count, prob = p, log = TRUE))
+  summarise(p_words_author = dmultinom(count, prob = p))
 ```
-Add a column with priors,
+
+Posterior distributions.
 ```{r}
-post <- left_join(post,
-          select(p_author, author, logp_author = logp), by = "author") %>%
-  # log(p(c)) + log(p(w | c))
-  mutate(p_author_words = exp(logp_words_author + logp_author)) %>%
+posterior <- left_join(post,
+                  select(p_author, author, p_author = p), 
+                  by = "author") %>%
+  mutate(p_author_words = p_words_author * p_author) %>%
   # normalize to probabilities
   group_by(text) %>%
   mutate(p_author_words = p_author_words / sum(p_author_words)) 
@@ -202,26 +155,33 @@ post <- left_join(post,
 
 Find the most probable document:
 ```{r}
-predictions <- post %>%
+predictions <- posterior %>%
   select(author, text, p_author_words) %>%
   # For each document, choose the author with the highest probability:
   group_by(text) %>%
   arrange(text, desc(p_author_words)) %>%
   slice(1) %>%
-  rename(pred = author) %>%
-  # add labels
-  left_join(select(federalist, text = number, author),
-            by = "text") %>%
-  # using p(author = Hamilton) will be easier to interpret later
-  mutate(p = p_author_words,
-         p = if_else(pred == "Madison", 1 - p, p),
-         author = if_else(is.na(author), "Unknown", author)) %>%
-  filter(author != "Jay")
+  rename(pred = author) 
+```
+Actual authors of the Federalist papers:
+```{r}
+authors <- select(federalist, text, author) %>%
+  group_by(text) %>% 
+  slice(1)
+```
+Add actual authors to predictions in order to evaluate this:
+```{r}
+predictions <- left_join(predictions, authors, by = "text") %>%
+  mutate(author = if_else(is.na(author), "Unknown", author)) %>%
+  filter(author != "Jay") %>%
+  mutate(p_hamilton = if_else(pred == "Hamilton", p_author_words,
+                              1 - p_author_words))
   
 ```
 
+
 ```{r}
-ggplot(predictions, aes(x = text, colour = author, y = p)) +
+ggplot(predictions, aes(x = text, colour = author, y = p_hamilton)) +
   geom_point()
 ```
 
