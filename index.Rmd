@@ -1,8 +1,8 @@
 ---
 title: "Naive Bayes"
 author: "Jeffrey Arnold"
-date: "4/3/2018"
-output: pdf_document
+date: "2018-04-05"
+output: html_document
 editor_options: 
   chunk_output_type: console
 ---
